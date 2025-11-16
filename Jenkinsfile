@@ -41,7 +41,7 @@ pipeline {
       // Maven runs in its own Docker container (separate from Jenkins)
       agent {
         docker {
-          image 'maven:3.9-eclipse-temurin-17'
+          image 'maven:3.9-eclipse-temurin-11'
           // important: use same Docker network as Jenkins/SonarQube/Nexus
           args '--network cicd-net -v $HOME/.m2:/root/.m2'
         }
