@@ -96,9 +96,9 @@ pipeline {
             WAR_PATH=\$(ls target/*.war | head -n 1)
             echo "Uploading \$WAR_PATH to Nexus as version ${APP_VERSION}"
 
-            curl -v -u $NEXUS_USER:$NEXUS_PASS \
-              --upload-file \$WAR_PATH \
-              "$NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/${APP_VERSION}/$NEXUS_ARTIFACT-${APP_VERSION}.war"
+            curl -vf -u $NEXUS_USER:$NEXUS_PASS \
+	      --upload-file $WAR_PATH \
+  	      "$NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/${APP_VERSION}/$NEXUS_ARTIFACT-${APP_VERSION}.war"
           """
         }
       }
