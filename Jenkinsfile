@@ -92,7 +92,43 @@ pipeline {
           usernameVariable: 'NEXUS_USER',
           passwordVariable: 'NEXUS_PASS'
         )]) {
-          sh """
+          sh '''
+            set -e
+        
+            echo "=== Locating WAR file ==="
+            WAR_PATH=$(ls target/*.war | head -n 1)
+            echo "WAR found: $WAR_PATH"
+
+            echo "=== Uploading WAR to Nexus ==="
+            curl -vf -u "$NEXUS_USER:$NEXUS_PASS" \
+              --upload-file "$WAR_PATH" \
+              "$NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/${APP_VERSION}/$NEXUS_ARTIFACT-${APP_VERSION}.war"
+          '''
+      }
+    }
+  }
+tage('Upload WAR to Nexus') {
+      agent any
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'nexus-creds',
+          usernameVariable: 'NEXUS_USER',
+          passwordVariable: 'NEXUS_PASS'
+        )]) {
+          sh '''
+            set -e
+            WAR_PATH=$(ls target/*.war | head -n 1)
+            echo "WAR found: $WAR_PATH"
+        
+            echo "Uploading WAR to Nexus..."
+            curl -vf -u $NEXUS_USER:$NEXUS_PASS \
+              --upload-file $WAR_PATH \
+              "$NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/${APP_VERSION}/$NEXUS_ARTIFACT-${APP_VERSION}.war"
+          '''
+        }
+     }
+  } 
+ sh """
             WAR_PATH=\$(ls target/*.war | head -n 1)
             echo "Uploading \$WAR_PATH to Nexus as version ${APP_VERSION}"
 
