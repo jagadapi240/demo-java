@@ -1,169 +1,136 @@
 pipeline {
-  agent none   // we will use different agents per stage
+    agent any
 
-  environment {
-    SONARQUBE_ENV = 'sonarqube'
-
-    // Nexus (inside Docker network)
-    NEXUS_URL        = 'http://nexus:8081'
-    NEXUS_REPO       = 'maven-releases'
-    NEXUS_GROUP_ID   = 'com.example.demo'
-    NEXUS_GROUP_PATH = 'com/example/demo'
-    NEXUS_ARTIFACT   = 'demo'
-
-    // Docker Hub repo (auto-created on first push)
-    DOCKER_REPO      = 'jagadapi240/demo-java'
-  }
-
-  options {
-    timestamps()
-  }
-
-  stages {
-
-    stage('Checkout') {
-      agent any
-      steps {
-        checkout scm
-        script {
-          env.GIT_COMMIT_SHORT = sh(
-            script: 'git rev-parse --short HEAD',
-            returnStdout: true
-          ).trim()
-          env.APP_VERSION = "1.0.0-${env.GIT_COMMIT_SHORT}"
-          echo "Commit: ${env.GIT_COMMIT}, Version: ${env.APP_VERSION}"
-        }
-      }
+    environment {
+        VERSION = "1.0.0-${env.GIT_COMMIT[0..6]}"
+        DOCKERHUB_REPO = "jagadapi240/demo-java"
+        SONARQUBE_SERVER = "sonarqube"
     }
 
-    
-    stage('SonarQube Analyze + Maven Build') {
-      // Maven runs in its own Docker container (separate from Jenkins)
-      agent {
-        docker {
-          image 'maven:3.9-eclipse-temurin-11'
-          // important: use same Docker network as Jenkins/SonarQube/Nexus
-          args '--network cicd-net -v $HOME/.m2:/root/.m2'
-        }
-      }
-      environment {
-        MAVEN_OPTS = "-Dmaven.test.failure.ignore=false"
-      }
-      steps {
-        withSonarQubeEnv("${SONARQUBE_ENV}") {
-          sh """
-            mvn clean verify \
-              org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.1.2184:sonar \
-              -Dsonar.projectKey=demo-java \
-              -Dsonar.projectName=demo-java \
-              -Dsonar.projectVersion=${APP_VERSION} \
-              -Dsonar.host.url=$SONAR_HOST_URL \
-              -Dsonar.login=$SONAR_AUTH_TOKEN
-          """
-        }
-      }
-      post {
-        success {
-          archiveArtifacts artifacts: 'target/*.war', fingerprint: true
-        }
-      }
-    }
+    stages {
 
-
-    stage('Quality Gate') {
-      agent any
-      steps {
-        script {
-          timeout(time: 10, unit: 'MINUTES') {
-            def qg = waitForQualityGate()
-            if (qg.status != 'OK') {
-              error "Pipeline aborted due to Quality Gate failure: ${qg.status}"
+        /* ---------------------------------------------------------
+         * 1) Clone and Build with Maven + SonarQube
+         * --------------------------------------------------------- */
+        stage('Build & SonarQube Analysis') {
+            steps {
+                checkout scm
+                withSonarQubeEnv('sonarqube') {
+                    sh """
+                        mvn clean verify sonar:sonar \
+                          -Dsonar.projectKey=demo-java \
+                          -Dsonar.host.url=http://sonarqube:9000 \
+                          -Dsonar.login=$SONAR_TOKEN
+                    """
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('Upload WAR to Nexus') {
-      agent any
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'nexus-creds',
-          usernameVariable: 'NEXUS_USER',
-          passwordVariable: 'NEXUS_PASS'
-        )]) {
-          sh '''
-            set -e
-        
-            echo "=== Locating WAR file ==="
-            WAR_PATH=$(ls target/*.war | head -n 1)
-            echo "WAR found: $WAR_PATH"
-
-            echo "=== Uploading WAR to Nexus ==="
-            curl -vf -u "$NEXUS_USER:$NEXUS_PASS" \
-              --upload-file "$WAR_PATH" \
-              "$NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/${APP_VERSION}/$NEXUS_ARTIFACT-${APP_VERSION}.war"
-          '''
-      }
-    }
-  }
-
-    stage('Build Docker Image (Tomcat + WAR from Nexus)') {
-      // Runs on Jenkins container, uses docker CLI via /var/run/docker.sock
-      agent any
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'nexus-creds',
-          usernameVariable: 'NEXUS_USER',
-          passwordVariable: 'NEXUS_PASS'
-        )]) {
-          sh """
-            docker build \
-              --build-arg NEXUS_URL=$NEXUS_URL \
-              --build-arg NEXUS_REPO=$NEXUS_REPO \
-              --build-arg NEXUS_GROUP_PATH=$NEXUS_GROUP_PATH \
-              --build-arg NEXUS_ARTIFACT=$NEXUS_ARTIFACT \
-              --build-arg NEXUS_VERSION=${APP_VERSION} \
-              --build-arg NEXUS_USERNAME=$NEXUS_USER \
-              --build-arg NEXUS_PASSWORD=$NEXUS_PASS \
-              -t $DOCKER_REPO:${APP_VERSION} .
-          """
+        /* ---------------------------------------------------------
+         * 2) Wait for Quality Gate
+         * --------------------------------------------------------- */
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
         }
-      }
-    }
 
-    stage('Push Docker Image to Docker Hub') {
-      agent any
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'dockerhub-creds',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
-        )]) {
-          sh """
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker push $DOCKER_REPO:${APP_VERSION}
-            docker logout
-          """
+        /* ---------------------------------------------------------
+         * 3) Upload WAR to Nexus
+         * --------------------------------------------------------- */
+        stage('Upload WAR to Nexus') {
+            environment {
+                NEXUS_URL = "http://nexus:8081"
+                NEXUS_REPO = "maven-releases"
+                NEXUS_GROUP_PATH = "com/example/demo"
+                NEXUS_ARTIFACT = "demo"
+            }
+            steps {
+                checkout scm
+                withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                                                 usernameVariable: 'NEXUS_USER',
+                                                 passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                        set -e
+                        echo "=== Locating WAR file ==="
+                        WAR_PATH=\$(ls target/*.war | head -n 1)
+
+                        echo "WAR located: \$WAR_PATH"
+                        echo "=== Uploading WAR to Nexus ==="
+
+                        curl -v -u "$NEXUS_USER:$NEXUS_PASS" \
+                          --upload-file \$WAR_PATH \
+                          $NEXUS_URL/repository/$NEXUS_REPO/$NEXUS_GROUP_PATH/$NEXUS_ARTIFACT/$VERSION/$NEXUS_ARTIFACT-$VERSION.war
+
+                        echo "WAR uploaded successfully."
+                    """
+                }
+            }
         }
-      }
+
+        /* ---------------------------------------------------------
+         * 4) Build Docker Image (Tomcat + WAR from Nexus)
+         * --------------------------------------------------------- */
+        stage('Build Docker Image (Tomcat + WAR from Nexus)') {
+            environment {
+                NEXUS_URL = "http://nexus:8081"
+                NEXUS_REPO = "maven-releases"
+                NEXUS_GROUP_PATH = "com/example/demo"
+                NEXUS_ARTIFACT = "demo"
+            }
+            steps {
+                checkout scm
+                withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                                                 usernameVariable: 'NEXUS_USER',
+                                                 passwordVariable: 'NEXUS_PASS')]) {
+
+                    sh """
+                        docker build \
+                          --network=cicd-net \
+                          --build-arg NEXUS_URL=$NEXUS_URL \
+                          --build-arg NEXUS_REPO=$NEXUS_REPO \
+                          --build-arg NEXUS_GROUP_PATH=$NEXUS_GROUP_PATH \
+                          --build-arg NEXUS_ARTIFACT=$NEXUS_ARTIFACT \
+                          --build-arg NEXUS_VERSION=$VERSION \
+                          --build-arg NEXUS_USERNAME=$NEXUS_USER \
+                          --build-arg NEXUS_PASSWORD=$NEXUS_PASS \
+                          -t $DOCKERHUB_REPO:$VERSION .
+                    """
+                }
+            }
+        }
+
+        /* ---------------------------------------------------------
+         * 5) Push Docker Image to Docker Hub
+         * --------------------------------------------------------- */
+        stage('Push Docker Image to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                 usernameVariable: 'D_USER',
+                                                 passwordVariable: 'D_PASS')]) {
+
+                    sh """
+                        echo "$D_PASS" | docker login -u "$D_USER" --password-stdin
+                        docker push $DOCKERHUB_REPO:$VERSION
+                    """
+                }
+            }
+        }
+
     }
 
-    stage('Notifications') {
-      agent any
-      steps {
-        echo "Build ${env.BUILD_NUMBER} for ${env.GIT_COMMIT} completed. Image: $DOCKER_REPO:${APP_VERSION}"
-      }
+    /* ---------------------------------------------------------
+     * 6) Pipeline Notifications
+     * --------------------------------------------------------- */
+    post {
+        success {
+            echo "SUCCESS: Build completed and image pushed: $DOCKERHUB_REPO:$VERSION"
+        }
+        failure {
+            echo "FAILURE: Check Jenkins logs at ${env.BUILD_URL}"
+        }
     }
-  }
-
-  post {
-    success {
-      echo "SUCCESS: Image $DOCKER_REPO:${APP_VERSION} pushed to Docker Hub."
-    }
-    failure {
-      echo "FAILURE: Check Jenkins logs at ${env.BUILD_URL}"
-    }
-  }
 }
 
