@@ -36,11 +36,13 @@ pipeline {
       }
     }
 
+    
     stage('SonarQube Analyze + Maven Build') {
       // Maven runs in its own Docker container (separate from Jenkins)
       agent {
         docker {
           image 'maven:3.9-eclipse-temurin-17'
+          // important: use same Docker network as Jenkins/SonarQube/Nexus
           args '--network cicd-net -v $HOME/.m2:/root/.m2'
         }
       }
@@ -50,10 +52,13 @@ pipeline {
       steps {
         withSonarQubeEnv("${SONARQUBE_ENV}") {
           sh """
-            mvn clean verify sonar:sonar \
+            mvn clean verify \
+              org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.1.2184:sonar \
               -Dsonar.projectKey=demo-java \
               -Dsonar.projectName=demo-java \
-              -Dsonar.projectVersion=${APP_VERSION}
+              -Dsonar.projectVersion=${APP_VERSION} \
+              -Dsonar.host.url=$SONAR_HOST_URL \
+              -Dsonar.login=$SONAR_AUTH_TOKEN
           """
         }
       }
@@ -63,6 +68,7 @@ pipeline {
         }
       }
     }
+
 
     stage('Quality Gate') {
       agent any
